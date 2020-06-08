@@ -1,4 +1,11 @@
 #!/usr/bin/env python3
+#
+# Copyright (c) 2018-2020 The Bitcoin Core developers
+# Distributed under the MIT software license, see the accompanying
+# file COPYING or http://www.opensource.org/licenses/mit-license.php.
+#
+# Build previous releases.
+
 import argparse
 import contextlib
 from fnmatch import fnmatch
@@ -8,10 +15,11 @@ import re
 import shutil
 import subprocess
 import sys
+import hashlib
 
 def usage(args, extras):
     print('Usage: {} [options] tag1 [tag2..tagN]'.format(sys.argv[0]))
-    print('Specify release tag(s), e.g.: {} v0.15.1'.format(sys.argv[0]))
+    print('Specify release tag(s), e.g.: {} v0.18.1'.format(sys.argv[0]))
     return 0
 
 @contextlib.contextmanager
@@ -37,19 +45,55 @@ def download_binary(tag, args):
                                                         match.group(2))
     tarball = 'bitcoin-{tag}-{platform}.tar.gz'.format(tag=tag[1:],
                                                        platform=args.platform)
-    url = 'https://bitcoin.org/{bin_path}/{tarball}'.format(bin_path=bin_path,
+    sha256Sums = "SHA256SUMS-{tag}.asc".format(tag=tag[1:])
+    tarballUrl = 'https://bitcoincore.org/{bin_path}/{tarball}'.format(bin_path=bin_path,
                                                             tarball=tarball)
-    print('Fetching: {url}'.format(url=url))
-    cmds = [
-        ['curl', '-O', url],
-        [ 'tar', '-zxf', tarball, '-C', tag, '--strip-components=1',
-                'bitcoin-{tag}'.format(tag=tag[1:]) ],
+    sha256SumsUrl = 'https://bitcoincore.org/{bin_path}/SHA256SUMS.asc'.format(bin_path=bin_path)
+
+    print('Fetching: {tarballUrl}'.format(tarballUrl=tarballUrl))
+    print('Fetching: {sha256SumsUrl}'.format(sha256SumsUrl=sha256SumsUrl))
+
+    header, status = subprocess.Popen(['curl', '-I', tarballUrl], stdout=subprocess.PIPE).communicate()
+    if re.search("404 Not Found",header.decode("utf-8")):
+        print("tag for binary does not exist")
+        return 1
+
+    curlCmds = [
+        ['curl', '-O', tarballUrl],
+        ['curl', "-o", sha256Sums, sha256SumsUrl],
     ]
-    for cmd in cmds:
+
+    for cmd in curlCmds:
         ret = subprocess.call(cmd)
         if ret:
             return ret
+
+    hasher = hashlib.sha256()
+    with open(tarball, "rb", encoding="utf-8") as afile:
+        buf = afile.read()
+        hasher.update(buf)
+    afile.close()
+    tarballHash = hasher.hexdigest()
+    file = open(sha256Sums, 'r', encoding="utf-8")
+    lst = list(file.readlines())
+    file.close()
+    lastline = lst[len(lst)-1]
+
+    for line in lst:
+        if re.search(tarballHash,line):
+            break
+        elif lastline == line:
+            print("Hash does not match")
+            Path(tarball).unlink()
+            return 1
+
+    ret = subprocess.call([ 'tar', '-zxf', tarball, '-C', tag, '--strip-components=1',
+            'bitcoin-{tag}'.format(tag=tag[1:]) ])
+    if ret:
+        return ret
+
     Path(tarball).unlink()
+    Path(sha256Sums).unlink()
     return 0
 
 def build_release(tag, args):
